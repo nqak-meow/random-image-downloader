@@ -40,6 +40,7 @@ class DownloaderApp:
         self.events = queue.Queue()
         self.preview_photo = None
         self.saved = 0
+        self.last_outdir = OUT_DIR
 
         self.outdir_var = tk.StringVar(value=OUT_DIR)
         self.interval_var = tk.StringVar(value="3")
@@ -163,13 +164,22 @@ class DownloaderApp:
         self.progress.pack(fill="x", padx=14, pady=(4, 12))
 
     def _browse(self):
-        path = filedialog.askdirectory(initialdir=self.outdir_var.get())
+        current = self.outdir_var.get().strip()
+        if not os.path.isdir(current):
+            current = os.path.expanduser("~")
+        path = filedialog.askdirectory(initialdir=current, mustexist=True)
         if path:
-            self.outdir_var.set(path)
+            self.outdir_var.set(os.path.normpath(path))
 
     def _open_folder(self):
         path = self.outdir_var.get().strip() or OUT_DIR
-        os.makedirs(path, exist_ok=True)
+        path = os.path.normpath(os.path.expanduser(path))
+        if not os.path.isdir(path):
+            try:
+                os.makedirs(path, exist_ok=True)
+            except OSError as e:
+                messagebox.showerror("Cannot open folder", str(e))
+                return
         os.startfile(path)
 
     def _read_options(self):
@@ -184,8 +194,22 @@ class DownloaderApp:
         except ValueError:
             raise ValueError("Interval must be a number of seconds.")
         blur = max(0, min(10, int(self.blur_var.get() or 0)))
-        outdir = self.outdir_var.get().strip() or OUT_DIR
+        outdir = os.path.normpath(os.path.expanduser(self.outdir_var.get().strip() or OUT_DIR))
         return w, h, count, interval, blur, outdir
+
+    @staticmethod
+    def _check_writable(outdir):
+        probe = os.path.join(outdir, ".write_test")
+        try:
+            with open(probe, "wb") as f:
+                f.write(b"ok")
+        except OSError as e:
+            raise ValueError(f"{outdir}\n\n{str(e)}")
+        finally:
+            try:
+                os.remove(probe)
+            except OSError:
+                pass
 
     def start(self):
         self._start_worker(single=False)
@@ -200,8 +224,9 @@ class DownloaderApp:
         try:
             w, h, count, interval, blur, outdir = self._read_options()
             os.makedirs(outdir, exist_ok=True)
+            self._check_writable(outdir)
         except (ValueError, OSError) as e:
-            messagebox.showerror("Options error", str(e))
+            messagebox.showerror("Cannot save here", str(e))
             return
 
         if single:
@@ -209,6 +234,8 @@ class DownloaderApp:
 
         self.stop_event.clear()
         self.saved = 0
+        self.last_outdir = outdir
+        self._set_status(f"Saving to {outdir}")
         if count:
             self.progress.configure(mode="determinate", maximum=count, value=0)
         else:
@@ -216,7 +243,6 @@ class DownloaderApp:
             self.progress.start(12)
         self.start_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
-        self._set_status("Starting...")
 
         self.thread = threading.Thread(
             target=self._worker,
@@ -262,8 +288,10 @@ class DownloaderApp:
             errors = 0
             self.saved += 1
             size_kb = os.path.getsize(path) // 1024
+            if index == 1:
+                self.events.put(("log", f"Saving to: {outdir}"))
             self.events.put(("log", f"[{index}] saved {os.path.basename(path)} ({size_kb} KB)"))
-            self.events.put(("done_one", (path, index, count)))
+            self.events.put(("done_one", (path, index, count, outdir)))
             if count and self.saved >= count:
                 break
             if self.stop_event.wait(interval):
@@ -314,12 +342,12 @@ class DownloaderApp:
                 if kind == "log":
                     self._log(payload)
                 elif kind == "done_one":
-                    path, index, count = payload
+                    path, index, count, outdir = payload
                     self._save_history(path)
                     self._show_preview(path)
                     if count:
                         self.progress.configure(value=index)
-                    self._set_status(f"{index} downloaded")
+                    self._set_status(f"{index} downloaded -> {outdir}")
                 elif kind == "error":
                     self._log("ERROR: " + payload)
                     self._set_status("Error")
@@ -346,12 +374,15 @@ class DownloaderApp:
             self.progress.configure(mode="determinate", maximum=100, value=100)
         self.start_btn.configure(state="normal")
         self.stop_btn.configure(state="disabled")
+        where = self.last_outdir
         if self.stop_event.is_set():
-            self._set_status(f"Stopped ({saved} saved)")
+            self._set_status(f"Stopped ({saved} saved) -> {where}")
         elif errors:
-            self._set_status(f"Finished with {errors} error(s) ({saved} saved)")
+            self._set_status(f"Failed after {errors} error(s), {saved} saved -> {where}")
+        elif saved == 0:
+            self._set_status(f"Nothing saved -> {where}")
         else:
-            self._set_status(f"Finished ({saved} saved)")
+            self._set_status(f"Finished ({saved} saved) -> {where}")
 
     def _log(self, text):
         self.log_box.configure(state="normal")
