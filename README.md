@@ -3,8 +3,6 @@
 A small desktop app that automatically downloads random images from
 [picsum.photos](https://picsum.photos) on a timer. Pure Python, no API keys.
 
-![screenshot](screenshot.png)
-
 ## Features
 
 - Random photos on a fixed interval, in the size you choose
