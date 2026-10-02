@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.part
+build/
+dist/
+*.spec
+.venv/
+venv/
+.idea/
+.vscode/
+images_downloaded.json
+random_images/
